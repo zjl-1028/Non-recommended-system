@@ -1,0 +1,17 @@
+user_id,item_id,review_text,rating
+0,0,good sound quality,4
+0,1,works perfectly fine,5
+1,0,not bad but a bit noisy,3
+1,1,terrible quality broke fast,1
+2,0,really nice and clear sound,5
+2,1,average for the price,3
+3,0,cheap but usable,4
+3,1,waste of money bad,2
+4,0,excellent recommend,5
+4,1,okay nothing special,3
+5,0,love it great build,5
+5,1,too expensive for what it is,2
+6,0,sound is crisp clean,4
+6,1,does not fit properly,2
+7,0,perfect for practice,5
+7,1,disappointed with performance,1
