@@ -2,64 +2,73 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
-from model import FinalModel
 
-class ReviewDataset(Dataset):
-    def __init__(self, user_num, item_num, vocab_size, max_len=20):
-        self.user_num = user_num
-        self.item_num = item_num
-        self.vocab_size = vocab_size
-        self.max_len = max_len
-        self.len = 10000
+DATA_PATH = "amazon_review.txt"
+
+class AmazonDataset(Dataset):
+    def __init__(self, max_seq_len=30):
+        self.max_seq_len = max_seq_len
+        self.user_num = 0
+        self.item_num = 0
+        self.vocab_size = 0
+        self.data = self.load_data()
+
+    def load_data(self):
+        data = []
+        with open(DATA_PATH, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split('\t')
+                u = int(parts[0])
+                i = int(parts[1])
+                r = float(parts[2])
+                seq = list(map(int, parts[3].split(',')))
+                if len(seq) > self.max_seq_len:
+                    seq = seq[:self.max_seq_len]
+                else:
+                    seq += [0] * (self.max_seq_len - len(seq))
+                self.user_num = max(self.user_num, u + 1)
+                self.item_num = max(self.item_num, i + 1)
+                self.vocab_size = max(self.vocab_size, max(seq) + 1)
+                data.append((u, i, r, seq))
+        return data
 
     def __len__(self):
-        return self.len
+        return len(self.data)
 
     def __getitem__(self, idx):
-        u = torch.randint(0, self.user_num, (1,)).item()
-        i = torch.randint(0, self.item_num, (1,)).item()
-        ur = torch.randint(0, self.vocab_size, (self.max_len,))
-        ir = torch.randint(0, self.vocab_size, (self.max_len,))
-        rating = torch.rand(1).item() * 4 + 1
-        sarc = torch.randint(0, 2, (1,)).item()
-        return u, i, ur, ir, rating, sarc
+        u, i, r, seq = self.data[idx]
+        return torch.tensor(u), torch.tensor(i), torch.tensor(r), torch.tensor(seq)
 
-def get_data_loaders(user_num, item_num, vocab_size, batch_size=32):
-    dataset = ReviewDataset(user_num, item_num, vocab_size)
-    total_len = len(dataset)
-    train_len = int(0.8 * total_len)
-    val_len = int(0.1 * total_len)
-    test_len = total_len - train_len - val_len
-    train_ds, val_ds, test_ds = random_split(dataset, [train_len, val_len, test_len])
-    
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
-    return train_loader, val_loader, test_loader
+def get_loaders(batch_size=32):
+    dataset = AmazonDataset()
+    n = len(dataset)
+    train_size = int(0.8 * n)
+    val_size = int(0.1 * n)
+    test_size = n - train_size - val_size
+    train_ds, val_ds, test_ds = random_split(dataset, [train_size, val_size, test_size])
+    train_loader = DataLoader(train_ds, batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size, shuffle=False)
+    return train_loader, val_loader, test_loader, dataset.user_num, dataset.item_num, dataset.vocab_size
 
-def train():
-    user_num = 1000
-    item_num = 500
-    vocab_size = 5000
-    dim = 64
-    lr = 1e-3
-    epochs = 10
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    train_loader, val_loader, test_loader = get_data_loaders(user_num, item_num, vocab_size)
-    model = FinalModel(user_num, item_num, vocab_size, dim).to(device)
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    train_loader, val_loader, _, user_num, item_num, vocab_size = get_loaders()
+    model = PBFLSarcModel(user_num, item_num, vocab_size).to(device)
     mse_loss = nn.MSELoss()
-    ce_loss = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-    for epoch in range(epochs):
+    for epoch in range(20):
         model.train()
         train_loss = 0
-        for u, i, ur, ir, r, sc in train_loader:
-            u, i, ur, ir, r, sc = u.to(device), i.to(device), ur.to(device), ir.to(device), r.to(device), sc.to(device)
+        for u, i, r, seq in train_loader:
+            u, i, r, seq = u.to(device), i.to(device), r.to(device), seq.to(device)
             optimizer.zero_grad()
-            pred_r, sarc_logits = model(u, i, ur, ir)
-            loss = mse_loss(pred_r, r) + ce_loss(sarc_logits, sc)
+            y_pred, _, _, _ = model(u, i, seq)
+            loss = mse_loss(y_pred, r)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -67,13 +76,13 @@ def train():
         model.eval()
         val_loss = 0
         with torch.no_grad():
-            for u, i, ur, ir, r, sc in val_loader:
-                u, i, ur, ir, r, sc = u.to(device), i.to(device), ur.to(device), ir.to(device), r.to(device), sc.to(device)
-                pred_r, sarc_logits = model(u, i, ur, ir)
-                loss = mse_loss(pred_r, r) + ce_loss(sarc_logits, sc)
+            for u, i, r, seq in val_loader:
+                u, i, r, seq = u.to(device), i.to(device), r.to(device), seq.to(device)
+                y_pred, _, _, _ = model(u, i, seq)
+                loss = mse_loss(y_pred, r)
                 val_loss += loss.item()
 
-        print(f"Epoch {epoch+1} | Train Loss: {train_loss/len(train_loader):.4f} | Val Loss: {val_loss/len(val_loader):.4f}")
+        print(f"Epoch {epoch+1:2d} | Train Loss: {train_loss/len(train_loader):.4f} | Val Loss: {val_loss/len(val_loader):.4f}")
 
-if __name__ == '__main__':
-    train()
+if __name__ == "__main__":
+    main()
